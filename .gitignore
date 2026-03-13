@@ -1,0 +1,14 @@
+# Virtual Environment
+venv/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# IDE settings
+.vscode/
+
+# Local data or logs (optional, but good practice)
+*.csv
+*.log
