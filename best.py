@@ -147,7 +147,7 @@ def main():
     ticker = input("\nEnter a Stock Ticker (e.g., AAPL, MSFT, NVDA): ").strip().upper()
     
     # 1. NLP MODEL INITIALIZATION
-    custom_model_path = r"C:\Users\ROG\OneDrive\Desktop\cleaning\custom_finbert_model"
+    custom_model_path = r"C:\Users\ROG\OneDrive\Desktop\minor\custom_finbert_model"
     if os.path.exists(custom_model_path):
         print(f"\n[*] Booting CUSTOM NLP Model from: {custom_model_path}")
         active_model = custom_model_path
