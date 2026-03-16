@@ -22,7 +22,7 @@ from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 hf_logging.set_verbosity_error() 
 
 def get_live_sentiment(ticker_symbol, sentiment_pipeline):
-    """Scrapes Finviz for live news and scores it using FinBERT"""
+    """Scrapes Finviz for live news and scores it using the loaded NLP model"""
     print(f"[*] Scraping live news for {ticker_symbol} from Finviz...")
     url = f'https://finviz.com/quote.ashx?t={ticker_symbol}'
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -43,13 +43,23 @@ def get_live_sentiment(ticker_symbol, sentiment_pipeline):
             print("[-] No recent news found. Defaulting to Neutral sentiment.")
             return 0.0
 
-        print(f"[+] Successfully scraped {len(headlines)} headlines. Analyzing with FinBERT...")
-        sentiment_map = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
+        print(f"[+] Successfully scraped {len(headlines)} headlines. Analyzing with NLP Model...")
+        # PyTorch uses LABEL_0, LABEL_1, LABEL_2 for fine-tuned models
+        sentiment_map = {
+            "LABEL_0": -1.0, "negative": -1.0, 
+            "LABEL_1": 0.0, "neutral": 0.0, 
+            "LABEL_2": 1.0, "positive": 1.0
+        }
         total_score = 0
         
         for hl in headlines:
-            result = sentiment_pipeline(hl)[0]
-            total_score += sentiment_map[result['label']] * result['score']
+            result = sentiment_pipeline(str(hl), truncation=True, max_length=128)[0]
+            label = result['label']
+            score = result['score']
+            
+            # Safely map the label, defaulting to 0 if unrecognized
+            mapped_value = sentiment_map.get(label, 0.0) 
+            total_score += mapped_value * score
             
         return total_score / len(headlines)
     except Exception as e:
@@ -57,10 +67,7 @@ def get_live_sentiment(ticker_symbol, sentiment_pipeline):
         return 0.0
 
 def load_historical_sentiment(df, ticker):
-    """
-    Attempts to load real historical sentiment data from a local CSV.
-    If none exists, it defaults to a neutral baseline for training.
-    """
+    """Loads real historical sentiment data from a local CSV."""
     filename = f"{ticker}_sentiment.csv"
     if os.path.exists(filename):
         print(f"[+] Found real historical sentiment dataset: {filename}. Merging...")
@@ -79,7 +86,7 @@ def load_historical_sentiment(df, ticker):
     return df
 
 def optimize_model(model_type, X_train, y_train):
-    """Runs Time-Series Cross Validation to find the best hyperparameters"""
+    """Runs Time-Series Cross Validation to find the best ML hyperparameters"""
     param_distributions = {
         'max_depth': [3, 5, 7],
         'learning_rate': [0.01, 0.05, 0.1, 0.2],
@@ -126,25 +133,18 @@ def plot_dashboard(df, ticker, sentiment_score, prediction, confidence, predicte
                         row_heights=[0.6, 0.2, 0.2])
 
     # --- PANEL 1: Candlesticks & Bollinger Bands ---
-    fig.add_trace(go.Candlestick(x=plot_df.index,
-                                 open=plot_df['Open'],
-                                 high=plot_df['High'],
-                                 low=plot_df['Low'],
-                                 close=plot_df['Close'],
-                                 name='Price'), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
+                                 low=plot_df['Low'], close=plot_df['Close'], name='Price'), row=1, col=1)
     
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBU_20_2.0'], 
-                             line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'), 
-                             name='Upper Margin'), row=1, col=1)
+                             line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'), name='Upper Margin'), row=1, col=1)
     
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBL_20_2.0'], 
                              line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'), 
-                             fill='tonexty', fillcolor='rgba(0, 191, 255, 0.08)', 
-                             name='Lower Margin'), row=1, col=1)
+                             fill='tonexty', fillcolor='rgba(0, 191, 255, 0.08)', name='Lower Margin'), row=1, col=1)
 
     fig.add_hline(y=predicted_price, line_dash="dash", line_color=pred_color, 
-                  annotation_text=f" AI Target: ${predicted_price:.2f} ", 
-                  annotation_position="top left", row=1, col=1)
+                  annotation_text=f" AI Target: ${predicted_price:.2f} ", annotation_position="top left", row=1, col=1)
 
     # --- PANEL 2: MACD ---
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MACD_12_26_9'], line=dict(color='#00bfff', width=1.5), name='MACD'), row=2, col=1)
@@ -155,19 +155,12 @@ def plot_dashboard(df, ticker, sentiment_score, prediction, confidence, predicte
 
     # --- PANEL 3: RSI ---
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI_14'], line=dict(color='#b000ff', width=1.5), name='RSI'), row=3, col=1)
-    
     fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=3, col=1)
     fig.update_yaxes(range=[0, 100], row=3, col=1)
 
-    # --- Global Layout Updates ---
-    fig.update_layout(title=title_text, 
-                      xaxis_rangeslider_visible=False, 
-                      template='plotly_dark',          
-                      height=850,
-                      hovermode='x unified',           
-                      showlegend=False)                
-
+    fig.update_layout(title=title_text, xaxis_rangeslider_visible=False, template='plotly_dark',          
+                      height=850, hovermode='x unified', showlegend=False)                
     fig.show()
 
 def main():
@@ -176,37 +169,46 @@ def main():
     print("="*50)
     
     ticker = input("\nEnter a Stock Ticker (e.g., AAPL, MSFT, NVDA): ").strip().upper()
-    print(f"\n[*] Initializing FinBERT NLP Model...")
     
+    # ---------------------------------------------------------
+    # NLP MODEL LOADING (WITH CUSTOM ABSOLUTE PATH)
+    # ---------------------------------------------------------
+    # Update this exact path to match your PC folder structure!
+    custom_model_path = r"C:\Users\ROG\OneDrive\Desktop\New folder\custom_finbert_model"
+    
+    if os.path.exists(custom_model_path):
+        print(f"\n[*] Booting CUSTOM NLP Model from: {custom_model_path}")
+        active_model = custom_model_path
+    else:
+        print(f"\n[-] Custom model not found at {custom_model_path}")
+        print("[*] Falling back to default internet model (ProsusAI/finbert)...")
+        active_model = "ProsusAI/finbert"
+
     device = 0 if torch.cuda.is_available() else -1
-    sentiment_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert", device=device)
+    sentiment_pipeline = pipeline("sentiment-analysis", model=active_model, device=device)
+    # ---------------------------------------------------------
     
     live_sentiment_score = get_live_sentiment(ticker, sentiment_pipeline)
     print(f"[+] Current NLP Sentiment Score: {live_sentiment_score:.4f}")
     
-    print(f"\n[*] Fetching 4-year market data for {ticker} to train background models...")
+    print(f"\n[*] Fetching 4-year market data for {ticker} to train ML models...")
     df = yf.download(ticker, period="4y", progress=False)
     
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
         
-    # Crucial: Must pull Open, High, Low for Candlestick charts
     df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
     df.index = df.index.tz_localize(None).normalize()
 
-    # Feature Engineering
     df.ta.rsi(length=14, append=True)
     df.ta.macd(fast=12, slow=26, signal=9, append=True)
     df.ta.bbands(length=20, std=2, append=True)
     df['Return'] = df['Close'].pct_change()
     
-    # Load Real Historical Sentiment (or fallback to baseline)
     df = load_historical_sentiment(df, ticker)
     
-    # Target Variables (Targeting Returns, not exact Prices)
     df['Target_Direction'] = (df['Close'].shift(-1) > df['Close']).astype(int)
     df['Target_Return'] = df['Close'].pct_change().shift(-1) 
-    
     df.dropna(inplace=True)
 
     features = ['Return', 'Volume', 'RSI_14', 'MACDh_12_26_9', 'BBL_20_2.0', 'BBU_20_2.0', 'FinBERT_Score']
@@ -215,9 +217,7 @@ def main():
             print(f"[-] FATAL ERROR: Feature {f} failed to calculate.")
             return
 
-    # Hyperparameter Tuning & Training
-    print("[*] Running Hyperparameter Tuning via Time-Series Split (This may take a minute)...")
-    
+    print("[*] Running Hyperparameter Tuning via Time-Series Split...")
     print("    -> Optimizing Classifier (Direction)...")
     best_classifier = optimize_model('classifier', df[features], df['Target_Direction'])
     
@@ -226,14 +226,12 @@ def main():
     
     print("[*] Models successfully optimized and trained.")
     
-    # Live Inference
     print("[*] Fetching live market data for real-time inference...")
     live_df = yf.download(ticker, period="1y", progress=False) 
     
     if isinstance(live_df.columns, pd.MultiIndex):
          live_df.columns = live_df.columns.get_level_values(0)
     
-    # Crucial: Must pull Open, High, Low for Candlestick charts
     live_df = live_df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
     live_df.ta.rsi(length=14, append=True)
     live_df.ta.macd(fast=12, slow=26, signal=9, append=True)
@@ -250,7 +248,6 @@ def main():
             print(f"[-] FATAL ERROR: Live market data missing indicator: {f}. Cannot proceed.")
             return
 
-    # Predictions
     prediction = best_classifier.predict(today_data[features])[0]
     probability = best_classifier.predict_proba(today_data[features])[0]
     confidence = probability[1]*100 if prediction == 1 else probability[0]*100

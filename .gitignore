@@ -12,3 +12,10 @@ __pycache__/
 # Local data or logs (optional, but good practice)
 *.csv
 *.log
+
+# Ignore Heavy AI Models
+custom_finbert_model/
+*.json
+
+# Ignore Massive Datasets
+*.csv
