@@ -87,65 +87,116 @@ def fetch_market_data(ticker, period="1y"):
     df.ta.bbands(length=20, std=2, append=True)
     df.ta.obv(append=True)
     df.ta.atr(length=14, append=True)
+    df.ta.sma(length=50, append=True)
+    df.ta.sma(length=200, append=True)
+    df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
     
     df['Return'] = df['Close'].pct_change()
     df['SPY_Return'] = df['SPY_Close'].pct_change()
     df['VIX_Change'] = df['VIX_Close'].diff()
-    
+    df['Volume_Ratio'] = df['Volume'] / df['Volume'].rolling(20).mean()
+    df['Return_Lag1'] = df['Return'].shift(1)
+    df['Return_Lag2'] = df['Return'].shift(2)
+    df['Return_Lag5'] = df['Return'].shift(5)
+
     return df
 
-def plot_dashboard(df, ticker, sentiment_score, prediction, confidence, predicted_price, current_price, projected_move):
-    """Generates an upgraded 4-panel institutional web dashboard"""
+def plot_dashboard(df, ticker, sentiment_score, predictions, current_price):
+    """Generates an upgraded 4-panel institutional web dashboard with multi-horizon targets"""
     print("\n[*] Launching 4-Panel Interactive Web Dashboard...")
-    plot_df = df.iloc[-120:].copy() # Zoomed out slightly to 120 days for better MACD context
-    
-    pred_text = "BULLISH (UP)" if prediction == 1 else "BEARISH (DOWN)"
-    pred_color = "#00ff00" if prediction == 1 else "#ff0000"
-    move_text = f"+{projected_move:.2f}%" if projected_move > 0 else f"{projected_move:.2f}%"
-    
-    title_text = (f"<b>{ticker} Real-Time Market Analysis</b><br>"
-                  f"<span style='font-size: 14px; color: {pred_color};'>Target: ${predicted_price:.2f} ({move_text}) | "
-                  f"Confidence: {confidence:.2f}% | Live NLP: {sentiment_score:.2f}</span>")
+    plot_df = df.iloc[-120:].copy()
 
-    # Upgraded to 4 rows for Volume integration
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.02, 
+    # Extract per-horizon data
+    d = predictions['daily']
+    w = predictions['weekly']
+    m = predictions['monthly']
+
+    daily_color = "#00ff00" if d['prediction'] == 1 else "#ff0000"
+    weekly_color = "#00ccff" if w['prediction'] == 1 else "#ff6600"
+    monthly_color = "#ffff00" if m['prediction'] == 1 else "#ff00ff"
+    sent_color = "#00ff00" if sentiment_score > 0.05 else ("#ff0000" if sentiment_score < -0.05 else "#888888")
+
+    title_text = (
+        f"<b>{ticker} Real-Time Market Analysis</b><br>"
+        f"<span style='font-size: 13px;'>"
+        f"<span style='color:{daily_color}'>Daily: ${d['predicted_price']:.2f} ({d['projected_move']:+.2f}%)</span> | "
+        f"<span style='color:{weekly_color}'>Weekly: ${w['predicted_price']:.2f} ({w['projected_move']:+.2f}%)</span> | "
+        f"<span style='color:{monthly_color}'>Monthly: ${m['predicted_price']:.2f} ({m['projected_move']:+.2f}%)</span>"
+        f"</span>"
+    )
+
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.02,
                         row_heights=[0.5, 0.15, 0.15, 0.2])
 
-    # --- PANEL 1: Candlesticks & Bollinger Bands ---
+    # --- PANEL 1: Candlesticks, Bollinger Bands & Moving Averages ---
     fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
                                  low=plot_df['Low'], close=plot_df['Close'], name='Price'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBU_20_2.0'], line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'), name='Upper Margin'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBL_20_2.0'], line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'), 
-                             fill='tonexty', fillcolor='rgba(0, 191, 255, 0.08)', name='Lower Margin'), row=1, col=1)
-    fig.add_hline(y=predicted_price, line_dash="dash", line_color=pred_color, annotation_text=f" AI Target: ${predicted_price:.2f} ", annotation_position="top left", row=1, col=1)
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBU_20_2.0'], line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'), name='BB Upper'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBL_20_2.0'], line=dict(color='rgba(0, 191, 255, 0.5)', width=1, dash='dot'),
+                             fill='tonexty', fillcolor='rgba(0, 191, 255, 0.08)', name='BB Lower'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BBM_20_2.0'], line=dict(color='rgba(0, 191, 255, 0.9)', width=1), name='BB Mid (SMA 20)'), row=1, col=1)
+    if 'SMA_50' in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['SMA_50'], line=dict(color='#ffaa00', width=1.2, dash='dash'), name='SMA 50'), row=1, col=1)
+    if 'SMA_200' in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['SMA_200'], line=dict(color='#ff5555', width=1.2, dash='dash'), name='SMA 200'), row=1, col=1)
 
-    # --- PANEL 2: Volume ---
-    volume_colors = ['#00cc00' if row['Close'] >= row['Open'] else '#cc0000' for index, row in plot_df.iterrows()]
+    # Multi-horizon target lines
+    fig.add_hline(y=current_price, line_dash="dot", line_color="white",
+                  annotation_text=f" Current: ${current_price:.2f} ", annotation_position="bottom left", row=1, col=1)
+    fig.add_hline(y=d['predicted_price'], line_dash="dash", line_color=daily_color,
+                  annotation_text=f" Daily: ${d['predicted_price']:.2f} ", annotation_position="top left", row=1, col=1)
+    fig.add_hline(y=w['predicted_price'], line_dash="dashdot", line_color=weekly_color,
+                  annotation_text=f" Weekly: ${w['predicted_price']:.2f} ", annotation_position="top right", row=1, col=1)
+    fig.add_hline(y=m['predicted_price'], line_dash="longdash", line_color=monthly_color,
+                  annotation_text=f" Monthly: ${m['predicted_price']:.2f} ", annotation_position="bottom right", row=1, col=1)
+
+    # Sentiment annotation box
+    sent_label = "Bullish" if sentiment_score > 0.05 else ("Bearish" if sentiment_score < -0.05 else "Neutral")
+    fig.add_annotation(
+        text=f"NLP: {sent_label} ({sentiment_score:+.2f})",
+        xref="paper", yref="paper", x=0.99, y=0.98,
+        showarrow=False, font=dict(size=12, color=sent_color),
+        bgcolor="rgba(0,0,0,0.6)", bordercolor=sent_color, borderwidth=1,
+        borderpad=4, xanchor="right", yanchor="top"
+    )
+
+    # --- PANEL 2: Volume with SMA ---
+    volume_colors = np.where(plot_df['Close'].values >= plot_df['Open'].values, '#00cc00', '#cc0000')
     fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Volume'], marker_color=volume_colors, name='Volume'), row=2, col=1)
+    if 'Vol_SMA20' in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Vol_SMA20'], line=dict(color='#ffaa00', width=1.2), name='Vol SMA 20'), row=2, col=1)
 
     # --- PANEL 3: MACD ---
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MACD_12_26_9'], line=dict(color='#00bfff', width=1.5), name='MACD'), row=3, col=1)
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MACDs_12_26_9'], line=dict(color='#ff9900', width=1.5), name='Signal'), row=3, col=1)
-    macd_colors = ['#00cc00' if val > 0 else '#cc0000' for val in plot_df['MACDh_12_26_9']]
+    macd_colors = np.where(plot_df['MACDh_12_26_9'].values > 0, '#00cc00', '#cc0000')
     fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['MACDh_12_26_9'], marker_color=macd_colors, name='MACD Hist'), row=3, col=1)
 
     # --- PANEL 4: RSI ---
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI_14'], line=dict(color='#b000ff', width=1.5), name='RSI'), row=4, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=4, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.4, row=4, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=4, col=1)
     fig.update_yaxes(range=[0, 100], row=4, col=1)
 
-    fig.update_layout(title=title_text, xaxis_rangeslider_visible=False, template='plotly_dark', height=950, hovermode='x unified', showlegend=False)                
+    # --- Y-axis labels ---
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    fig.update_yaxes(title_text="Volume", row=2, col=1)
+    fig.update_yaxes(title_text="MACD", row=3, col=1)
+    fig.update_yaxes(title_text="RSI", row=4, col=1)
+
+    fig.update_layout(title=title_text, xaxis_rangeslider_visible=False, template='plotly_dark', height=950, hovermode='x unified', showlegend=True,
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=9)))
     fig.show()
 
 def main():
     print("="*50)
     print(" ADVANCED MACRO-ENABLED FINANCIAL ANALYSER ")
     print("="*50)
-    
+
     ticker = input("\nEnter a Stock Ticker (e.g., AAPL, MSFT, NVDA): ").strip().upper()
-    
+
     # 1. NLP MODEL INITIALIZATION
     custom_model_path = r"C:\Users\ROG\OneDrive\Desktop\minor\custom_finbert_model"
     if os.path.exists(custom_model_path):
@@ -158,39 +209,42 @@ def main():
 
     device = 0 if torch.cuda.is_available() else -1
     sentiment_pipeline = pipeline("sentiment-analysis", model=active_model, device=device)
-    
+
     live_sentiment_score = get_live_sentiment(ticker, sentiment_pipeline)
     print(f"[+] Current NLP Sentiment Score: {live_sentiment_score:.4f}")
-    
-    # 2. INSTANT ML MODEL LOADING
+
+    # 2. LOAD ML MODELS FOR ALL HORIZONS
+    horizons = {'daily': 'T+1', 'weekly': 'T+5', 'monthly': 'T+21'}
+    models = {}
+
     print(f"\n[*] Loading pre-trained ML models for {ticker}...")
-    classifier_path = f"{ticker}_xgb_classifier.json"
-    regressor_path = f"{ticker}_xgb_regressor.json"
-    
-    if not os.path.exists(classifier_path) or not os.path.exists(regressor_path):
-        print(f"[-] ERROR: Could not find pre-trained ML models for {ticker}.")
-        print(f"[-] Please run 'python train_ml.py' and enter {ticker} to build the models first!")
-        return
-        
-    best_classifier = xgb.XGBClassifier()
-    best_classifier.load_model(classifier_path)
-    
-    best_regressor = xgb.XGBRegressor()
-    best_regressor.load_model(regressor_path)
-    print("[+] Models loaded instantly!")
+    for horizon in horizons:
+        cls_path = f"{ticker}_xgb_classifier_{horizon}.json"
+        reg_path = f"{ticker}_xgb_regressor_{horizon}.json"
+        if not os.path.exists(cls_path) or not os.path.exists(reg_path):
+            print(f"[-] ERROR: Could not find {horizon} ML models for {ticker}.")
+            print(f"[-] Please run 'python trainml.py' and enter {ticker} to build the models first!")
+            return
+        cls = xgb.XGBClassifier()
+        cls.load_model(cls_path)
+        reg = xgb.XGBRegressor()
+        reg.load_model(reg_path)
+        models[horizon] = {'classifier': cls, 'regressor': reg}
+    print("[+] All models (daily/weekly/monthly) loaded instantly!")
 
     # 3. LIVE MARKET DATA FETCHING
     print("[*] Fetching live market & macro data for real-time inference...")
     live_df = fetch_market_data(ticker, period="1y")
-    live_df.dropna(inplace=True) 
-    
+    live_df.dropna(inplace=True)
+
     today_data = live_df.iloc[-1:].copy()
     today_data['FinBERT_Score'] = live_sentiment_score
     current_price = today_data['Close'].values[0]
 
     features = [
-        'Return', 'Volume', 'RSI_14', 'MACDh_12_26_9', 'BBL_20_2.0', 'BBU_20_2.0', 
-        'OBV', 'ATRr_14', 'SPY_Return', 'VIX_Change', 'FinBERT_Score'
+        'Return', 'Volume', 'RSI_14', 'MACDh_12_26_9', 'BBL_20_2.0', 'BBU_20_2.0',
+        'OBV', 'ATRr_14', 'SPY_Return', 'VIX_Change', 'FinBERT_Score',
+        'Volume_Ratio', 'Return_Lag1', 'Return_Lag2', 'Return_Lag5'
     ]
 
     for f in features:
@@ -198,36 +252,49 @@ def main():
             print(f"[-] FATAL ERROR: Live market data missing indicator: {f}. Cannot proceed.")
             return
 
-    # 4. INSTANT PREDICTIONS
-    prediction = best_classifier.predict(today_data[features])[0]
-    probability = best_classifier.predict_proba(today_data[features])[0]
-    confidence = probability[1]*100 if prediction == 1 else probability[0]*100
-    
-    predicted_return = best_regressor.predict(today_data[features])[0]
-    predicted_price = current_price * (1 + predicted_return)
-    projected_move = predicted_return * 100
+    # 4. MULTI-HORIZON PREDICTIONS
+    predictions = {}
+    for horizon, label in horizons.items():
+        cls = models[horizon]['classifier']
+        reg = models[horizon]['regressor']
+        pred = cls.predict(today_data[features])[0]
+        prob = cls.predict_proba(today_data[features])[0]
+        conf = prob[1] * 100 if pred == 1 else prob[0] * 100
+        pred_ret = reg.predict(today_data[features])[0]
+        pred_price = current_price * (1 + pred_ret)
+        proj_move = pred_ret * 100
+        predictions[horizon] = {
+            'prediction': pred, 'confidence': conf,
+            'predicted_price': pred_price, 'projected_move': proj_move
+        }
 
-    print("\n" + "="*50)
+    print("\n" + "="*60)
     print(f" REAL-TIME ANALYSIS RESULTS: {ticker} ")
-    print("="*50)
-    print(f"Current Price:         ${current_price:.2f}")
-    print(f"Predicted Price (T+1): ${predicted_price:.2f} ({projected_move:+.2f}%)")
-    print("-" * 50)
+    print("="*60)
+    print(f"Current Price:  ${current_price:.2f}")
+    print("-" * 60)
+    print(f"{'Horizon':<12} {'Direction':<15} {'Target Price':<16} {'Move':<10} {'Score'}")
+    print("-" * 60)
+    for horizon, label in horizons.items():
+        p = predictions[horizon]
+        direction = "BULLISH (UP)" if p['prediction'] == 1 else "BEARISH (DOWN)"
+        print(f"{label:<12} {direction:<15} ${p['predicted_price']:<14.2f} {p['projected_move']:+.2f}%     {p['confidence']:.1f}%")
+    print("-" * 60)
     print(f"Live NLP Sentiment:    {live_sentiment_score:.4f} (-1 to 1)")
     print(f"Current RSI (14):      {today_data['RSI_14'].values[0]:.2f}")
     print(f"S&P 500 Daily Move:    {today_data['SPY_Return'].values[0]*100:+.2f}%")
     print(f"VIX (Volatility) Move: {today_data['VIX_Change'].values[0]:+.2f}")
-    print("-" * 50)
-    
-    if prediction == 1:
-        print(f"🎯 ALGO DIRECTION: BULLISH (UP)")
-        print(f"Confidence: {confidence:.2f}%")
-    else:
-        print(f"🎯 ALGO DIRECTION: BEARISH (DOWN)")
-        print(f"Confidence: {confidence:.2f}%")
-    print("="*50)
 
-    plot_dashboard(live_df, ticker, live_sentiment_score, prediction, confidence, predicted_price, current_price, projected_move)
+    # --- FEATURE IMPORTANCE (from daily classifier) ---
+    importance = models['daily']['classifier'].get_booster().get_score(importance_type='gain')
+    sorted_imp = sorted(importance.items(), key=lambda x: x[1], reverse=True)
+    print("-" * 60)
+    print("Top Feature Drivers (by gain):")
+    for feat, gain in sorted_imp[:5]:
+        print(f"  {feat:20s} : {gain:.2f}")
+    print("="*60)
+
+    plot_dashboard(live_df, ticker, live_sentiment_score, predictions, current_price)
 
 if __name__ == "__main__":
     main()
